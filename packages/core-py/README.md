@@ -45,9 +45,13 @@ packages/core-py/
 │   └── prompts/              # 系统提示词
 │       ├── system_workflow.py         # 工作流提示
 │       └── system_memory.py           # 记忆提示
+├── api/
+│   ├── server.py             # FastAPI服务器
+│   └── __init__.py
 ├── requirements.txt          # 依赖
 ├── pyproject.toml           # 项目配置
-├── example.py               # 使用示例
+├── example.py               # Python使用示例
+├── start_server.sh          # 启动API服务器脚本
 └── README.md
 ```
 
@@ -82,7 +86,75 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 MEMORY_FILE=./memory.json
 ```
 
-### 基础使用
+## 使用方式
+
+### 方式一：启动API服务器（推荐用于前端集成）
+
+启动FastAPI服务器，供前端UI（CLI或Web）调用：
+
+```bash
+# 使用启动脚本
+./start_server.sh
+
+# 或手动启动
+cd packages/core-py
+python api/server.py
+```
+
+服务器将在 `http://localhost:8000` 启动
+
+访问API文档：`http://localhost:8000/docs`
+
+#### API端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/chat` | POST | 发送消息并获取agent响应 |
+| `/api/copilot-response` | POST | 提交人工审核反馈 |
+| `/api/messages/{session_id}` | GET | 获取会话所有消息 |
+| `/api/compact/{session_id}` | POST | 压缩会话历史 |
+| `/api/session/{session_id}` | DELETE | 删除会话 |
+| `/api/memory/stats` | GET | 获取记忆统计 |
+| `/api/memory/search?tags=` | GET | 搜索记忆 |
+| `/api/memory` | DELETE | 清空记忆 |
+
+#### 前端调用示例
+
+```typescript
+// 发送消息
+const response = await fetch('http://localhost:8000/api/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    session_id: 'user-123',
+    messages: [
+      { role: 'user', content: '请处理这张发票：./invoice.jpg' }
+    ]
+  })
+});
+
+const data = await response.json();
+// data.copilot_requests - 需要人工审核的请求
+// data.messages - agent返回的消息
+
+// 提交人工审核
+if (data.copilot_requests.length > 0) {
+  await fetch('http://localhost:8000/api/copilot-response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: 'user-123',
+      tool_call_id: data.copilot_requests[0].tool.call_id,
+      tool_name: data.copilot_requests[0].tool.name,
+      status: 'approve',
+      approved_data: data.copilot_requests[0].extracted_data,
+      reason: '数据正确'
+    })
+  });
+}
+```
+
+### 方式二：直接使用Python（用于脚本和自动化）
 
 ```python
 import asyncio
