@@ -1,7 +1,6 @@
-import type { CopilotResponse } from "core";
+import type { CopilotResponse, AgentResponse } from "react-shared";
 import { createRef, useEffect } from "react";
 import { useAgentStore } from "react-shared";
-import type { AgentResponse } from "../api/next/route";
 
 const sessionIdRef = createRef<string>();
 sessionIdRef.current = null;

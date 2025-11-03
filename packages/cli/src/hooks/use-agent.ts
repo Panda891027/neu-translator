@@ -1,18 +1,27 @@
-import { AgentLoop, type CopilotResponse, Memory } from "core";
+import type { CopilotResponse } from "react-shared";
+import { ExpenseAgentAPI } from "react-shared";
 import { createRef, useCallback } from "react";
 import { useAgentStore } from "react-shared";
 
-const agentLoopRef = createRef<AgentLoop>();
-agentLoopRef.current = null;
+// API client instance
+const apiClientRef = createRef<ExpenseAgentAPI>();
+apiClientRef.current = null;
 
 const runningRef = createRef<boolean>();
 runningRef.current = false;
 
-const memoryRef = createRef<Memory>();
-memoryRef.current = new Memory();
-
 const abortController = createRef<AbortController | null>();
 abortController.current = null;
+
+// Get or create API client
+function getAPIClient(): ExpenseAgentAPI {
+  if (!apiClientRef.current) {
+    // Read API URL from environment or use default
+    const apiUrl = process.env.EXPENSE_AGENT_API_URL || "http://localhost:8000";
+    apiClientRef.current = new ExpenseAgentAPI(apiUrl);
+  }
+  return apiClientRef.current;
+}
 
 export const useAgent = () => {
   const messages = useAgentStore((s) => s.messages);
@@ -29,51 +38,24 @@ export const useAgent = () => {
   const copilotRequests = useAgentStore((s) => s.copilotRequests);
   const setCopilotRequests = useAgentStore((s) => s.setCopilotRequests);
 
-  const initAgentLoop = useCallback(async () => {
-    if (!agentLoopRef.current) {
-      abortController.current = new AbortController();
-
-      await memoryRef.current?.init();
-
-      agentLoopRef.current = new AgentLoop({
-        abortSignal: abortController.current.signal,
-        memory: memoryRef.current!,
-      });
-
-      process.addListener("SIGINT", () => {
-        runningRef.current = false;
-        abortController.current?.abort();
-        process.exit(0);
-      });
-    }
-  }, []);
-
   const doNext = useCallback(async () => {
-    if (!agentLoopRef.current) {
-      await initAgentLoop();
-    }
-
+    const apiClient = getAPIClient();
     setCurrentActor("agent");
 
-    while (runningRef.current && agentLoopRef.current) {
+    while (runningRef.current) {
       try {
-        const agentResponse = await agentLoopRef.current.next();
+        // Note: The Python backend handles the iteration internally
+        // We don't need to call next() repeatedly like the old implementation
+        // The backend will process until it needs copilot feedback or finishes
 
-        if (agentResponse.copilotRequests.length > 0) {
-          setCopilotRequests(agentResponse.copilotRequests);
-          break;
-        }
+        // Get current messages to check if we need to make a request
+        const currentMessages = await apiClient.getMessages();
+        setMessages(currentMessages);
 
-        setCurrentActor(agentResponse.actor);
+        // Since we've already sent the user input or copilot response,
+        // the backend should have processed it. We just need to get the latest state.
+        break;
 
-        const newMessages = await agentLoopRef.current.getMessages();
-        setMessages(newMessages.slice());
-
-        setUnprocessedToolCalls(agentResponse.unprocessedToolCalls);
-
-        if (agentResponse.actor === "user") {
-          break;
-        }
       } catch (error) {
         const isAbortError =
           error instanceof Error && error.name === "AbortError";
@@ -86,45 +68,72 @@ export const useAgent = () => {
       }
     }
   }, [
-    initAgentLoop,
     setCurrentActor,
     setMessages,
-    setUnprocessedToolCalls,
-    setCopilotRequests,
   ]);
 
   const submitAgent = async (input: string) => {
     runningRef.current = true;
+    const apiClient = getAPIClient();
 
-    if (!agentLoopRef.current) {
-      await initAgentLoop();
+    try {
+      // Send chat message to Python backend
+      const agentResponse = await apiClient.chat(input);
+
+      // Check for copilot requests
+      if (agentResponse.copilotRequests && agentResponse.copilotRequests.length > 0) {
+        setCopilotRequests(agentResponse.copilotRequests);
+        setCurrentActor("agent");
+      } else {
+        setCurrentActor(agentResponse.actor);
+      }
+
+      // Update messages
+      const allMessages = await apiClient.getMessages();
+      setMessages(allMessages);
+
+      // Update unprocessed tool calls
+      setUnprocessedToolCalls(agentResponse.unprocessedToolCalls);
+
+      runningRef.current = false;
+    } catch (error) {
+      console.error("Error submitting to agent:", error);
+      runningRef.current = false;
+      setCurrentActor("user");
     }
-
-    await agentLoopRef.current?.userInput([
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: input,
-          },
-        ],
-      },
-    ]);
-
-    const newMessages = await agentLoopRef.current?.getMessages();
-    if (newMessages) {
-      setMessages(newMessages.slice());
-    }
-
-    await doNext();
   };
 
   const finishCopilotRequest = async (copilotResponses: CopilotResponse[]) => {
     setCopilotRequests([]);
-    agentLoopRef.current?.addCopilotResponses(copilotResponses);
+    const apiClient = getAPIClient();
 
-    await doNext();
+    try {
+      // Submit copilot responses to Python backend
+      for (const response of copilotResponses) {
+        await apiClient.submitCopilotResponse(response);
+      }
+
+      // Continue the agent loop by sending a follow-up chat request
+      // The backend will process the copilot responses and continue
+      const agentResponse = await apiClient.chat("");
+
+      if (agentResponse.copilotRequests && agentResponse.copilotRequests.length > 0) {
+        setCopilotRequests(agentResponse.copilotRequests);
+      } else {
+        setCurrentActor(agentResponse.actor);
+      }
+
+      // Update messages
+      const allMessages = await apiClient.getMessages();
+      setMessages(allMessages);
+
+      // Update unprocessed tool calls
+      setUnprocessedToolCalls(agentResponse.unprocessedToolCalls);
+
+    } catch (error) {
+      console.error("Error finishing copilot request:", error);
+      setCurrentActor("user");
+    }
   };
 
   const stop = () => {
@@ -134,11 +143,22 @@ export const useAgent = () => {
   };
 
   const compact = useCallback(async () => {
-    if (!agentLoopRef.current) {
-      return;
+    const apiClient = getAPIClient();
+    try {
+      await apiClient.compact();
+    } catch (error) {
+      console.error("Error compacting history:", error);
     }
+  }, []);
 
-    return agentLoopRef.current.compact();
+  const getMemoryStats = useCallback(async () => {
+    const apiClient = getAPIClient();
+    try {
+      return await apiClient.getMemoryStats();
+    } catch (error) {
+      console.error("Error getting memory stats:", error);
+      return null;
+    }
   }, []);
 
   return {
@@ -149,7 +169,7 @@ export const useAgent = () => {
     copilotRequests,
     finishCopilotRequest,
     stop,
-    memoryRef: memoryRef,
     compact,
+    getMemoryStats,
   };
 };

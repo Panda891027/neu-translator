@@ -1,4 +1,4 @@
-import type { CopilotRequest, ModelMessage, ToolCallPart } from "core";
+import type { CopilotRequest, ModelMessage, ToolCallPart } from "./types.js";
 import { create } from "zustand";
 
 type Actor = "user" | "agent";
