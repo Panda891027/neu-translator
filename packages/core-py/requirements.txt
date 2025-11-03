@@ -1,0 +1,16 @@
+# Core dependencies
+httpx>=0.27.0
+pydantic>=2.0.0
+
+# LLM and AI
+# Qwen3-VL API access (using HTTP client)
+# For local Qwen deployment, you might need:
+# transformers>=4.40.0
+# torch>=2.0.0
+
+# Development dependencies (optional)
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+black>=24.0.0
+ruff>=0.3.0
+mypy>=1.9.0
